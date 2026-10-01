@@ -14655,7 +14655,7 @@ sub format_data_type
 			$q = '' if ( $col =~ /^['\`]/ );
 			# Bind parameters must not be quoted, the input functions
 			# of the tsql_compat date types do not ignore the quotes
-			$q = '' if ($sprep && $self->{use_tsql_compat});
+			$q = '' if ($sprep && $self->{is_mssql} && $self->{use_tsql_compat});
 			if ($col =~ /^0000-/) {
 				$col = $self->{replace_zero_date} ?  "$q$self->{replace_zero_date}$q" : 'NULL';
 			} elsif ($col =~ /^(\d+-\d+-\d+ \d+:\d+:\d+)\.$/) {
@@ -14811,6 +14811,22 @@ sub get_uuid
 	return $uuid;
 }
 
+# When the destination type is a type of the tsql_compat extension, returns
+# the PostgreSQL type with the same input format, used to format the data.
+# The type can be given without the sys schema (DATA_TYPE, MODIFY_TYPE), it
+# then resolves to the sys type through the search_path, except bit that is
+# a PostgreSQL keyword for the bit string type.
+sub tsql_compat_data_format
+{
+	my ($self, $type) = @_;
+
+	return '' if (!$self->{is_mssql} || !$self->{use_tsql_compat});
+	return '' if ($type !~ /^(sys\.)?(\w+)/i);
+	my ($schema, $name) = ($1, lc($2));
+	return '' if (!$schema && $name eq 'bit');
+	return $Ora2Pg::MSSQL::TSQL_COMPAT_DATA_FORMAT{$name} || '';
+}
+
 # Returns true when the destination type is a binary type of the tsql_compat
 # extension (sys.varbinary, sys.binary, sys.image), they must be handled
 # like bytea for the data export.
@@ -14818,8 +14834,7 @@ sub is_tsql_compat_binary
 {
 	my ($self, $type) = @_;
 
-	return 0 if (!$self->{use_tsql_compat} || $type !~ /^sys\.(\w+)/i);
-	return (($Ora2Pg::MSSQL::TSQL_COMPAT_DATA_FORMAT{lc($1)} || '') eq 'bytea') ? 1 : 0;
+	return ($self->tsql_compat_data_format($type) eq 'bytea') ? 1 : 0;
 }
 
 sub hs_cond
@@ -14833,10 +14848,10 @@ sub hs_cond
 		my $dt = $data_types->[$idx];
 		# Data types of the tsql_compat extension are formatted
 		# like the PostgreSQL type with the same input format
-		if ($self->{use_tsql_compat} && $dt =~ /^sys\.(\w+)/i && exists $Ora2Pg::MSSQL::TSQL_COMPAT_DATA_FORMAT{lc($1)})
+		if (my $fmt = $self->tsql_compat_data_format($dt))
 		{
-			$hs->{isvarbinary} = 1 if ($Ora2Pg::MSSQL::TSQL_COMPAT_DATA_FORMAT{lc($1)} eq 'bytea');
-			$dt = $Ora2Pg::MSSQL::TSQL_COMPAT_DATA_FORMAT{lc($1)};
+			$hs->{isvarbinary} = 1 if ($fmt eq 'bytea');
+			$dt = $fmt;
 		}
 		$hs->{geometry} = $src_data_types->[$idx] =~ /SDO_GEOMETRY/i ? 1 : 0;
 		$hs->{isnum} = $dt !~ /^(json|char|varchar|date|time|text|bytea|xml|uuid|citext|enum)/i ? 1 :0;
