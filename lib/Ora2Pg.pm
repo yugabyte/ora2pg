@@ -1441,6 +1441,9 @@ sub _init
 
 	# Disable the use of mssqlfce library by default
 	$self->{use_mssqlfce} ||= 0;
+
+	# Disable the use of the tsql_compat extension by default
+	$self->{use_tsql_compat} ||= 0;
 	$self->{local_schemas} = ();
 	$self->{local_schemas_regex} = '';
 
@@ -1563,6 +1566,9 @@ sub _init
 			%{$self->{data_type}} = %Ora2Pg::MySQL::SQL_TYPE;
 		} elsif ($self->{is_mssql}) {
 			%{$self->{data_type}} = %Ora2Pg::MSSQL::SQL_TYPE;
+			if ($self->{use_tsql_compat}) {
+				$self->{data_type}{$_} = $Ora2Pg::MSSQL::TSQL_COMPAT_TYPE{$_} foreach (keys %Ora2Pg::MSSQL::TSQL_COMPAT_TYPE);
+			}
 		} else {
 			%{$self->{data_type}} = %Ora2Pg::Oracle::SQL_TYPE;
 		}
@@ -1587,6 +1593,9 @@ sub _init
 			%{$self->{data_type}} = %Ora2Pg::MySQL::SQL_TYPE;
 		} elsif ($self->{is_mssql}) {
 			%{$self->{data_type}} = %Ora2Pg::MSSQL::SQL_TYPE;
+			if ($self->{use_tsql_compat}) {
+				$self->{data_type}{$_} = $Ora2Pg::MSSQL::TSQL_COMPAT_TYPE{$_} foreach (keys %Ora2Pg::MSSQL::TSQL_COMPAT_TYPE);
+			}
 		} else {
 			%{$self->{data_type}} = %Ora2Pg::Oracle::SQL_TYPE;
 		}
@@ -14644,6 +14653,9 @@ sub format_data_type
 		elsif ($cond->{isdate})
 		{
 			$q = '' if ( $col =~ /^['\`]/ );
+			# Bind parameters must not be quoted, the input functions
+			# of the tsql_compat date types do not ignore the quotes
+			$q = '' if ($sprep && $self->{use_tsql_compat});
 			if ($col =~ /^0000-/) {
 				$col = $self->{replace_zero_date} ?  "$q$self->{replace_zero_date}$q" : 'NULL';
 			} elsif ($col =~ /^(\d+-\d+-\d+ \d+:\d+:\d+)\.$/) {
@@ -14807,22 +14819,30 @@ sub hs_cond
 	for (my $idx = 0; $idx < scalar(@$data_types); $idx++)
 	{
 		my $hs={};
+		my $dt = $data_types->[$idx];
+		# Data types of the tsql_compat extension are formatted
+		# like the PostgreSQL type with the same input format
+		if ($self->{use_tsql_compat} && $dt =~ /^sys\.(\w+)/i && exists $Ora2Pg::MSSQL::TSQL_COMPAT_DATA_FORMAT{lc($1)})
+		{
+			$hs->{isvarbinary} = 1 if ($Ora2Pg::MSSQL::TSQL_COMPAT_DATA_FORMAT{lc($1)} eq 'bytea');
+			$dt = $Ora2Pg::MSSQL::TSQL_COMPAT_DATA_FORMAT{lc($1)};
+		}
 		$hs->{geometry} = $src_data_types->[$idx] =~ /SDO_GEOMETRY/i ? 1 : 0;
-		$hs->{isnum} = $data_types->[$idx] !~ /^(json|char|varchar|date|time|text|bytea|xml|uuid|citext|enum)/i ? 1 :0;
-		$hs->{isdate} =  $data_types->[$idx] =~ /^(date|time)/i ? 1 : 0;
+		$hs->{isnum} = $dt !~ /^(json|char|varchar|date|time|text|bytea|xml|uuid|citext|enum)/i ? 1 :0;
+		$hs->{isdate} =  $dt =~ /^(date|time)/i ? 1 : 0;
 		$hs->{raw} = $src_data_types->[$idx] =~ /RAW/i ? 1 : 0;
 		$hs->{clob} = $src_data_types->[$idx] =~ /CLOB/i ? 1 : 0;
 		$hs->{blob} = $src_data_types->[$idx] =~ /BLOB/i ? 1 : 0;
 		$hs->{long} = $src_data_types->[$idx] =~ /LONG/i ? 1 : 0;
-		$hs->{istext} = $data_types->[$idx] =~ /(char|text|xml|uuid|citext)/i ? 1 : 0;
-		$hs->{isbytea} = $data_types->[$idx] =~ /bytea/i ? 1 : 0;
-		$hs->{isoid} = $data_types->[$idx] =~ /oid/i ? 1 : 0;
-		$hs->{isbit} = $data_types->[$idx] =~ /bit/i ? 1 : 0;
-		$hs->{isboolean} = $data_types->[$idx] =~ /boolean/i ? 1 : 0;
-		$hs->{isefile} = $data_types->[$idx] =~ /efile/i ? 1 : 0;
-		$hs->{isinterval} = $data_types->[$idx] =~ /interval/i ? 1 : 0;
+		$hs->{istext} = $dt =~ /(char|text|xml|uuid|citext)/i ? 1 : 0;
+		$hs->{isbytea} = $dt =~ /bytea/i ? 1 : 0;
+		$hs->{isoid} = $dt =~ /oid/i ? 1 : 0;
+		$hs->{isbit} = $dt =~ /bit/i ? 1 : 0;
+		$hs->{isboolean} = $dt =~ /boolean/i ? 1 : 0;
+		$hs->{isefile} = $dt =~ /efile/i ? 1 : 0;
+		$hs->{isinterval} = $dt =~ /interval/i ? 1 : 0;
 		$hs->{isnotnull} = 0;
-		$hs->{isjson} = $data_types->[$idx] =~ /json/i ? 1 : 0;
+		$hs->{isjson} = $dt =~ /json/i ? 1 : 0;
 		if ($self->{nullable}{$table}{$idx} =~ /^N/) {
 			$hs->{isnotnull} = 1;
 		}
@@ -21088,6 +21108,12 @@ sub set_search_path
 	my ($self, $owner, $pkg_path) = @_;
 
 	my $local_path = '';
+	# Objects of the tsql_compat extension are in schema sys, it must be
+	# searched before pg_catalog to take precedence over the PostgreSQL
+	# functions with the same name (left, log, replace, ...).
+	my $tsql_path = '';
+	$tsql_path = ',sys,pg_catalog' if ($self->{is_mssql} && $self->{use_tsql_compat});
+	$local_path .= $tsql_path;
 	if ($self->{postgis_schema}) {
 		$local_path = ',' . $self->quote_object_name($self->{postgis_schema});
 	}
@@ -21117,6 +21143,10 @@ sub set_search_path
 		if ($#pathes >= 0) {
 			map { $_ =  $self->quote_object_name($_); } @pathes;
 			$search_path = "SET search_path = " . join(',', @pathes) . "$local_path;";
+		} elsif ($tsql_path) {
+			# Keep public first so that objects are not created in schema sys
+			(my $path = $local_path) =~ s/,public$//;
+			$search_path = "SET search_path = public$path;";
 		}
 	}
 
@@ -22077,6 +22107,15 @@ sub normalize_query
 sub _escape_lob
 {
 	my ($self, $col, $generic_type, $cond, $isnested, $dest_type) = @_;
+
+	# The binary types of the tsql_compat extension take an hexadecimal
+	# value prefixed by 0x, the \x notation of bytea is not supported.
+	if ($cond->{isvarbinary} && $generic_type eq 'BLOB')
+	{
+		$col = '0x' . unpack("H*",$col);
+		$col = "'$col'" if ($self->{type} ne 'COPY' && !$self->{pg_dsn});
+		return $col;
+	}
 
 	if ($self->{type} eq 'COPY')
 	{

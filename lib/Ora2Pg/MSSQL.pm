@@ -57,6 +57,72 @@ our %SQL_TYPE = (
 	'SQL_VARIANT' => 'text'
 );
 
+# Data types provided by the tsql_compat PostgreSQL extension in schema sys.
+# When USE_TSQL_COMPAT is enabled they replace the default translation so
+# that the SQL Server types are kept as is. NCHAR is not listed because
+# sys.NCHAR is a domain over bpchar that can not take a length.
+our %TSQL_COMPAT_TYPE = (
+	'TINYINT' => 'sys.tinyint',
+	'BIT' => 'sys.bit',
+	'MONEY' => 'sys.money',
+	'SMALLMONEY' => 'sys.smallmoney',
+	'SMALLDATETIME' => 'sys.smalldatetime',
+	'DATETIME' => 'sys.datetime',
+	'DATETIME2' => 'sys.datetime2',
+	'DATETIMEOFFSET' => 'sys.datetimeoffset',
+	'NVARCHAR' => 'sys.nvarchar',
+	'NTEXT' => 'sys.ntext',
+	'VARBINARY' => 'sys.varbinary',
+	'BINARY' => 'sys.binary',
+	'IMAGE' => 'sys.image',
+	'UNIQUEIDENTIFIER' => 'sys.uniqueidentifier',
+	'SYSNAME' => 'sys.sysname'
+);
+
+# PostgreSQL type with the same input format as the tsql_compat types, it
+# is used to format the data during data export.
+our %TSQL_COMPAT_DATA_FORMAT = (
+	'tinyint' => 'smallint',
+	'bit' => 'smallint',
+	'money' => 'numeric',
+	'smallmoney' => 'numeric',
+	'smalldatetime' => 'timestamp',
+	'datetime' => 'timestamp',
+	'datetime2' => 'timestamp',
+	'datetimeoffset' => 'timestamptz',
+	'nvarchar' => 'varchar',
+	'ntext' => 'text',
+	'sysname' => 'varchar',
+	'uniqueidentifier' => 'uuid',
+	# sys.varbinary input needs the 0x hexadecimal notation
+	'varbinary' => 'bytea',
+	'binary' => 'bytea',
+	'image' => 'bytea'
+);
+
+# T-SQL functions provided by the tsql_compat PostgreSQL extension. When
+# USE_TSQL_COMPAT is enabled calls to these functions are not rewritten
+# and are not counted in the migration assessment.
+our %TSQL_COMPAT_FUNCTION = map { $_ => 1 } qw(
+	ABS ASCII ATN2 CEILING CHAR CHARINDEX CHOOSE CONCAT CONCAT_WS COUNT_BIG
+	DATALENGTH DATE_BUCKET DATEADD DATEDIFF DATEDIFF_BIG DATEFROMPARTS
+	DATENAME DATEPART DATETIME2FROMPARTS DATETIMEFROMPARTS
+	DATETIMEOFFSETFROMPARTS DATETRUNC DAY DEGREES DIFFERENCE EOMONTH EXP
+	FLOOR FN_VARBINTOHEXSTR FORMAT GETDATE GETUTCDATE IIF ISDATE ISJSON
+	ISNULL ISNUMERIC JSON_MODIFY JSON_QUERY JSON_VALUE LEFT LEN LOG LOG10
+	LOGINPROPERTY LOWER LTRIM MONTH NEWID NEWSEQUENTIALID PARSENAME PATINDEX
+	POWER QUOTENAME RADIANS RAND REPLACE REPLICATE REVERSE RIGHT ROUND RTRIM
+	SIGN SMALLDATETIMEFROMPARTS SOUNDEX SPACE SQRT SQUARE STDEV STDEVP STR
+	STRING_AGG STRING_ESCAPE STRING_SPLIT STUFF SUBSTRING SWITCHOFFSET
+	SYSDATETIME SYSDATETIMEOFFSET SYSUTCDATETIME TIMEFROMPARTS
+	TODATETIMEOFFSET TRANSLATE TRIGGER_NESTLEVEL TRIM UNICODE UPPER VAR VARP
+	YEAR
+);
+
+# Datepart keywords accepted by DATEADD, DATEDIFF, DATEPART, DATENAME, ...
+# The tsql_compat versions of these functions take the datepart as text.
+our $TSQL_DATEPART_REGEX = 'year|yyyy|yy|quarter|qq|q|month|mm|m|dayofyear|dy|y|day|dd|d|week|wk|ww|weekday|dw|w|hour|hh|minute|mi|n|second|ss|s|millisecond|ms|microsecond|mcs|nanosecond|ns|tzoffset|tz|iso_week|isowk|isoww';
+
 sub _db_connection
 {
 	my $self = shift;
@@ -1335,6 +1401,18 @@ sub _sql_type
 
 		$len *= 2 if ($len > 0 && $self->{double_max_varchar} && $type =~ /VARCHAR/);
 
+		# Types emulated by the tsql_compat extension are kept as is,
+		# only the length or fractional seconds precision is appended
+		if ($self->{use_tsql_compat} && $self->{data_type}{$type} =~ /^sys\./i)
+		{
+			if ($len > 0 && $type =~ /^(NVARCHAR|VARBINARY|BINARY)$/) {
+				return "$self->{data_type}{$type}($len)";
+			} elsif ($type =~ /^(DATETIME2|DATETIMEOFFSET)$/ && $scale ne '' && $scale =~ /^\d+$/ && $scale < 7) {
+				return "$self->{data_type}{$type}($scale)";
+			}
+			return $self->{data_type}{$type};
+		}
+
 		if ($len)
 		{
 			if ( $type =~ /CHAR|TEXT/ )
@@ -1407,6 +1485,14 @@ sub replace_sql_type
 	$str =~ s/with local time zone/with time zone/igs;
 	$str =~ s/([A-Z])ORA2PG_COMMENT/$1 ORA2PG_COMMENT/igs;
 	$str =~ s/\(\s*MAX\s*\)//igs;
+
+	# Types already qualified with schema sys (tsql_compat extension)
+	# must not be translated again
+	my %sys_types = ();
+	my $j = 0;
+	if ($self->{use_tsql_compat}) {
+		while ($str =~ s/\b(sys\.[a-z0-9_]+)/\%SYSTYPE$j\%/is) { $sys_types{$j} = $1; $j++; }
+	}
 
 	# Replace type with precision
 	my $mssqltype_regex = '';
@@ -1492,6 +1578,10 @@ sub replace_sql_type
 	$str =~ s/\%\|\%/\)/gs;
 	$str =~ s/\%\|/\(/gs;
 
+	if ($self->{use_tsql_compat}) {
+		while ($str =~ s/\b(sys\.[a-z0-9_]+)/\%SYSTYPE$j\%/is) { $sys_types{$j} = $1; $j++; }
+	}
+
 	# Replace datatype even without precision
 	my %recover_type = ();
 	my $i = 0;
@@ -1513,6 +1603,8 @@ sub replace_sql_type
 	}
 	# Set varchar without length to text
 	$str =~ s/\bVARCHAR(\s*(?!\())/text$1/igs;
+
+	$str =~ s/\%SYSTYPE(\d+)\%/$sys_types{$1}/gs;
 
         return $str;
 }

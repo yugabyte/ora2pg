@@ -473,8 +473,9 @@ sub convert_plsql_code
 
 	return if ($str eq '');
 
-	# Remove the SYS schema from calls
-	$str =~ s/\bSYS\.//igs;
+	# Remove the SYS schema from calls, except for SQL Server when the
+	# tsql_compat extension is used, its objects are in schema sys.
+	$str =~ s/\bSYS\.//igs if (!$class->{is_mssql} || !$class->{use_tsql_compat});
 
 	# Replace outer join sign (+) with a placeholder
 	$class->{outerjoin_idx} //= 0;
@@ -1841,8 +1842,9 @@ sub replace_oracle_function
 	my $field = '\s*([^\(\),]+)\s*';
 	my $num_field = '\s*([\d\.]+)\s*';
 
-	# Remove the SYS schema from calls
-	$str =~ s/\bSYS\.//igs;
+	# Remove the SYS schema from calls, except for SQL Server when the
+	# tsql_compat extension is used, its objects are in schema sys.
+	$str =~ s/\bSYS\.//igs if (!$class->{is_mssql} || !$class->{use_tsql_compat});
 
 	#--------------------------------------------
 	# PL/SQL to PL/PGSQL code conversion
@@ -2442,8 +2444,9 @@ sub replace_sql_type
 {
         my ($self, $str) = @_;
 
-	# Remove the SYS schema from type name
-	$str =~ s/\bSYS\.//igs;
+	# Remove the SYS schema from type name, except for SQL Server when
+	# the tsql_compat extension is used, its types are in schema sys.
+	$str =~ s/\bSYS\.//igs if (!$self->{is_mssql} || !$self->{use_tsql_compat});
 
 	$str =~ s/with local time zone/with time zone/igs;
 	$str =~ s/([A-Z])\%ORA2PG_COMMENT/$1 \%ORA2PG_COMMENT/igs;
@@ -3530,6 +3533,10 @@ sub mssql_estimate_cost
 		$cost_details{'FOREIGN_OBJECT'} -= $n*$UNCOVERED_MSSQL_SCORE{'FOREIGN_OBJECT'};
 	}
 	$n = () = $str =~ /[\s,]\s*sys[a-z]+/igs;
+	# Functions and types of the tsql_compat extension are not system objects
+	if ($class->{use_tsql_compat}) {
+		$n -= () = $str =~ /[\s,]\s*(?:sysdatetime|sysdatetimeoffset|sysutcdatetime|sysname)\b/igs;
+	}
 	$cost_details{'SYS_OBJECT'} += $n*$UNCOVERED_MSSQL_SCORE{'SYS_OBJECT'};
 	$n = () = $str =~ /\b\#\#[a-z0-9_\$]+\b/igs;
 	$cost_details{'GLOBAL_TEMP_TABLE'} += $n*$UNCOVERED_MSSQL_SCORE{'GLOBAL_TEMP_TABLE'};
@@ -3541,8 +3548,10 @@ sub mssql_estimate_cost
 	$cost_details{'COLLATE'} += $n*$UNCOVERED_MSSQL_SCORE{'COLLATE'};
 	$n = () = $str =~ /\bRETURNS\s+TABLE\s/igs;
 	$cost_details{'RETURNS_TABLE'} += $n*$UNCOVERED_MSSQL_SCORE{'RETURNS_TABLE'};
-	$n = () = $str =~ /\bTODATETIMEOFFSET\s*\(/igs;
-	$cost_details{'TODATETIMEOFFSET'} += $n*$UNCOVERED_MSSQL_SCORE{'TODATETIMEOFFSET'};
+	if (!$class->{use_tsql_compat}) {
+		$n = () = $str =~ /\bTODATETIMEOFFSET\s*\(/igs;
+		$cost_details{'TODATETIMEOFFSET'} += $n*$UNCOVERED_MSSQL_SCORE{'TODATETIMEOFFSET'};
+	}
 	$n = () = $str =~ /\bCURSOR\s*\(/igs;
 	$cost_details{'CURSOR'} += $n*$UNCOVERED_MSSQL_SCORE{'CURSOR'};
 	$n = () = $str =~ /\b\@\@[a-z0-9_\$]+/igs;
@@ -3569,6 +3578,7 @@ sub mssql_estimate_cost
 	foreach my $f (@MSSQL_FUNCTIONS)
 	{
 		next if ($class->{use_mssqlfce} && $f =~ /^(DATEDIFF|STUFF|PATINDEX|ISNUMERIC|ISDATE|LEN|PRINT)$/);
+		next if ($class->{use_tsql_compat} && exists $Ora2Pg::MSSQL::TSQL_COMPAT_FUNCTION{$f});
 		if ($str =~ /\b$f\s*\(/igs)
 		{
 			$cost += 2;
@@ -4183,9 +4193,18 @@ sub mssql_to_plpgsql
 {
         my ($class, $str) = @_;
 
-	# Replace getdate() with CURRENT_TIMESTAMP
-	$str =~ s/\bgetdate\s*\(\s*\)/date_trunc('millisecond', CURRENT_TIMESTAMP::timestamp)/ig;
-	$str =~ s/\bgetutcdate\s*\(\s*\)/date_trunc('millisecond', now() AT TIME ZONE 'UTC')/ig;
+	# With the tsql_compat extension the T-SQL functions are kept as is,
+	# only the datepart keyword is quoted as these functions take a text.
+	if ($class->{use_tsql_compat})
+	{
+		$str =~ s/\b(DATEADD|DATEDIFF|DATEDIFF_BIG|DATENAME|DATEPART|DATETRUNC|DATE_BUCKET)\s*\(\s*($Ora2Pg::MSSQL::TSQL_DATEPART_REGEX)\s*,/$1('\L$2\E',/ig;
+	}
+	else
+	{
+		# Replace getdate() with CURRENT_TIMESTAMP
+		$str =~ s/\bgetdate\s*\(\s*\)/date_trunc('millisecond', CURRENT_TIMESTAMP::timestamp)/ig;
+		$str =~ s/\bgetutcdate\s*\(\s*\)/date_trunc('millisecond', now() AT TIME ZONE 'UTC')/ig;
+	}
 	# Replace user_name() with CURRENT_USER
 	$str =~ s/\buser_name\s*\(\s*\)/CURRENT_USER/gi;
 
@@ -4194,7 +4213,7 @@ sub mssql_to_plpgsql
 	$str =~ s/\bwith\s*schemabinding//ig;
 
 	# Replace call to SYS_GUID() function
-	$str =~ s/\bnewid\s*\(\s*\)/$class->{uuid_function}()/ig;
+	$str =~ s/\bnewid\s*\(\s*\)/$class->{uuid_function}()/ig if (!$class->{use_tsql_compat});
 
 	# Remove COUNT setting
 	$str =~ s/SET NOCOUNT (ON|OFF)[;\s]*//ig;
@@ -4216,41 +4235,50 @@ sub mssql_to_plpgsql
 	####
 	# Replace some function with their PostgreSQL syntax
 	####
-	$str =~ s/\bDATALENGTH\s*\(/LENGTH(/gi;
-	$str =~ s/\bLEN\s*\(([^\)]+)\)/LENGTH(RTRIM($1))/gi;
-	$str =~ s/ISNULL\s*\(/COALESCE(/gi;
-	$str =~ s/SPACE\s*\(/REPEAT(' ', /gi;
-	$str =~ s/REPLICATE\s*\(/REPEAT(/gi;
-	$str =~ s/CHARINDEX\s*\(\s*(.*?)\s*,\s*(.*?)\s*,\s*(\d+)\)/position('$1' in substring($2 from $3))/gi;
-	$str =~ s/CHARINDEX\s*\(\s*(.*?)\s*,\s*(.*?)\s*\)/position('$1' in $2)/gi;
-	$str =~ s/DATEPART\s*\(\s*(.*?)\s*,\s*(.*?)\s*\)/date_part('$1', $2)/gi;
-	$str =~ s/DATEADD\s*\(\s*(.*?)\s*\,\s*(.*?)\s*,\s*(.*?)\s*\)/$3 + INTERVAL '$2 $1'/gi;
+	# These functions are provided by the tsql_compat extension
+	if (!$class->{use_tsql_compat})
+	{
+		$str =~ s/\bDATALENGTH\s*\(/LENGTH(/gi;
+		$str =~ s/\bLEN\s*\(([^\)]+)\)/LENGTH(RTRIM($1))/gi;
+		$str =~ s/ISNULL\s*\(/COALESCE(/gi;
+		$str =~ s/SPACE\s*\(/REPEAT(' ', /gi;
+		$str =~ s/REPLICATE\s*\(/REPEAT(/gi;
+		$str =~ s/CHARINDEX\s*\(\s*(.*?)\s*,\s*(.*?)\s*,\s*(\d+)\)/position('$1' in substring($2 from $3))/gi;
+		$str =~ s/CHARINDEX\s*\(\s*(.*?)\s*,\s*(.*?)\s*\)/position('$1' in $2)/gi;
+		$str =~ s/DATEPART\s*\(\s*(.*?)\s*,\s*(.*?)\s*\)/date_part('$1', $2)/gi;
+		$str =~ s/DATEADD\s*\(\s*(.*?)\s*\,\s*(.*?)\s*,\s*(.*?)\s*\)/$3 + INTERVAL '$2 $1'/gi;
+	}
+	# CONVERT() is not provided by the tsql_compat extension
 	$str =~ s/CONVERT\s*\(\s*(.*?)\s*,\s*(.*?)\s*,\s*(\d+)\)/TO_CHAR($2, '$MSSQL_STYLE{$3}')::$1/gi;
 	$str =~ s/CONVERT\s*\(\s*NVARCHAR\s*(.*?)\s*\(\s*(.*?)\s*\s*\)\,\s*(.*?)\s*\)/CAST($3 AS varchar($2))/gi;
 	$str =~ s/CONVERT\s*\(\s*(.*?)\s*\(\s*(.*?)\s*\s*\),\s*(.*?)\s*\)/CAST($3 AS $1($2))/gi;
 	$str =~ s/CONVERT\s*\(\s*(.*?)\s*\,\s*(.*?)\s*\)/CAST($2 AS $1)/gi;
-	$str =~ s/\bRAND\s*\(/random(/gi;
-	$str =~ s/\bYEAR\s*\(/date_part('year', /gi;
-	$str =~ s/\bMONTH\s*\(/date_part('month', /gi;
-	$str =~ s/\bDAY\s*\(/date_part('day', /gi;
-	$str =~ s/\bSYSDATETIMEOFFSET\s*\(/now(/gi;
-	$str =~ s/\bSYSDATETIME\s*\(\s*\)/now()::timestamp/gi;
-	$str =~ s/\bSYSUTCDATETIME\s*\(\s*\)/now() at time zone 'UTC'/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:weekday|dw|w)\s*,\s*([^\)]+)\s*\)/to_char($1, 'day')/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:dayofyear|dy|y)\s*,\s*([^\)]+)\s*\)/date_part('doy', $1)/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:month|mm|m)\s*,\s*([^\)]+)\s*\)/to_char($1, 'month')/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:year|yy|y)\s*,/date_part('year',/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:quarter|qq|q)\s*,/date_part('quarter',/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:day|dd|d)\s*,/date_part('day',/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:week|ww|wk)\s*,\s*([^\)]+)\s*\)/date_part('week', $1)+1/gi;
-	$str =~ s/\bDATENAME\s*\(\s*hour\s*,/date_part('hour',/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:minute|mi|n)\s*,/date_part('minute',/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:second|ss|s)\s*,/date_part('second',/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:millisecond|ms)\s*,/date_part('millisecond',/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:microsecond|mcs)\s*,/date_part('microsecond',/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:nanosecond|ns)\s*,/date_part('nanosecond',/gi; # will fail, should be microsecond
-	$str =~ s/\bDATENAME\s*\(\s*(?:ISO_WEEK|ISOWK|ISOWW)\s*,\s*([^\)]+)\s*\)/date_part('week', $1)/gi;
-	$str =~ s/\bDATENAME\s*\(\s*(?:TZoffset|tz)\s*,\s*([^\)]+)\s*\)/to_char($1, 'TZH:TZM')/gi;
+	# These functions are provided by the tsql_compat extension
+	if (!$class->{use_tsql_compat})
+	{
+		$str =~ s/\bRAND\s*\(/random(/gi;
+		$str =~ s/\bYEAR\s*\(/date_part('year', /gi;
+		$str =~ s/\bMONTH\s*\(/date_part('month', /gi;
+		$str =~ s/\bDAY\s*\(/date_part('day', /gi;
+		$str =~ s/\bSYSDATETIMEOFFSET\s*\(/now(/gi;
+		$str =~ s/\bSYSDATETIME\s*\(\s*\)/now()::timestamp/gi;
+		$str =~ s/\bSYSUTCDATETIME\s*\(\s*\)/now() at time zone 'UTC'/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:weekday|dw|w)\s*,\s*([^\)]+)\s*\)/to_char($1, 'day')/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:dayofyear|dy|y)\s*,\s*([^\)]+)\s*\)/date_part('doy', $1)/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:month|mm|m)\s*,\s*([^\)]+)\s*\)/to_char($1, 'month')/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:year|yy|y)\s*,/date_part('year',/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:quarter|qq|q)\s*,/date_part('quarter',/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:day|dd|d)\s*,/date_part('day',/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:week|ww|wk)\s*,\s*([^\)]+)\s*\)/date_part('week', $1)+1/gi;
+		$str =~ s/\bDATENAME\s*\(\s*hour\s*,/date_part('hour',/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:minute|mi|n)\s*,/date_part('minute',/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:second|ss|s)\s*,/date_part('second',/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:millisecond|ms)\s*,/date_part('millisecond',/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:microsecond|mcs)\s*,/date_part('microsecond',/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:nanosecond|ns)\s*,/date_part('nanosecond',/gi; # will fail, should be microsecond
+		$str =~ s/\bDATENAME\s*\(\s*(?:ISO_WEEK|ISOWK|ISOWW)\s*,\s*([^\)]+)\s*\)/date_part('week', $1)/gi;
+		$str =~ s/\bDATENAME\s*\(\s*(?:TZoffset|tz)\s*,\s*([^\)]+)\s*\)/to_char($1, 'TZH:TZM')/gi;
+	}
 
 	# Rewrite expression like SET p_MatchExpression =  '%'+p_MatchExpression+'%'
 	$str =~ s/\bSET\s+([^\s=;:]+)\s*=/$1 :=/igs;
