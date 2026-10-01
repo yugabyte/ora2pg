@@ -2845,9 +2845,11 @@ CONFIGURATION
         rewritten, and they are not counted in the migration assessment. The
         datepart argument of DATEADD, DATEDIFF, DATEPART, DATENAME,
         DATETRUNC and DATE_BUCKET is quoted as the extension functions take
-        it as text. The generated search_path includes sys ahead of
-        pg_catalog; set the same search_path for the database or role used
-        by the application, for example:
+        it as text, and TRIM() is called as sys.trim() because TRIM is
+        PostgreSQL grammar. The generated search_path includes sys ahead of
+        pg_catalog, after POSTGIS_SCHEMA when it is set; set the same
+        search_path for the database or role used by the application, for
+        example:
 
                 ALTER DATABASE mydb SET search_path = "$user", public, sys, pg_catalog;
 

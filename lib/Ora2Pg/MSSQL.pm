@@ -101,8 +101,10 @@ our %TSQL_COMPAT_DATA_FORMAT = (
 );
 
 # T-SQL functions provided by the tsql_compat PostgreSQL extension. When
-# USE_TSQL_COMPAT is enabled calls to these functions are not rewritten
-# and are not counted in the migration assessment.
+# USE_TSQL_COMPAT is enabled calls to these functions are not translated
+# and are not counted in the migration assessment. The datepart argument of
+# the date functions is quoted, and TRIM() is called as sys.trim() because
+# TRIM is grammar in PostgreSQL.
 our %TSQL_COMPAT_FUNCTION = map { $_ => 1 } qw(
 	ABS ASCII ATN2 CEILING CHAR CHARINDEX CHOOSE CONCAT CONCAT_WS COUNT_BIG
 	DATALENGTH DATE_BUCKET DATEADD DATEDIFF DATEDIFF_BIG DATEFROMPARTS

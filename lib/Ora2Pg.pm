@@ -12781,7 +12781,7 @@ sub _howto_get_data
 			}
 			push(@{$self->{spatial_srid}{$table}}, $spatial_srid);
 			
-			if ( ($type->[$k] =~ /bytea/i && $self->{enable_blob_export}) ||
+			if ( (($type->[$k] =~ /bytea/i || $self->is_tsql_compat_binary($type->[$k])) && $self->{enable_blob_export}) ||
 				($self->{clob_as_blob} && $src_type->[$k] =~ /CLOB/i) )
 			{
 				if ($self->{data_limit} >= 1000)
@@ -14809,6 +14809,17 @@ sub get_uuid
 	chomp($uuid);
 
 	return $uuid;
+}
+
+# Returns true when the destination type is a binary type of the tsql_compat
+# extension (sys.varbinary, sys.binary, sys.image), they must be handled
+# like bytea for the data export.
+sub is_tsql_compat_binary
+{
+	my ($self, $type) = @_;
+
+	return 0 if (!$self->{use_tsql_compat} || $type !~ /^sys\.(\w+)/i);
+	return (($Ora2Pg::MSSQL::TSQL_COMPAT_DATA_FORMAT{lc($1)} || '') eq 'bytea') ? 1 : 0;
 }
 
 sub hs_cond
@@ -18138,7 +18149,8 @@ sub _show_infos
 						if ( (uc($self->{tables}{$t}{column_info}{$k}[1]) eq 'NUMBER') && ($self->{tables}{$t}{column_info}{$k}[2] eq '') ) {
 							$table_detail{'numbers with no precision'}++;
 						}
-						if ( $self->{data_type}{uc($self->{tables}{$t}{column_info}{$k}[1])} eq 'bytea' ) {
+						if ( $self->{data_type}{uc($self->{tables}{$t}{column_info}{$k}[1])} eq 'bytea'
+								|| $self->is_tsql_compat_binary($self->{data_type}{uc($self->{tables}{$t}{column_info}{$k}[1])}) ) {
 							$table_detail{'binary columns'}++;
 						}
 					}
@@ -21108,15 +21120,15 @@ sub set_search_path
 	my ($self, $owner, $pkg_path) = @_;
 
 	my $local_path = '';
+	if ($self->{postgis_schema}) {
+		$local_path = ',' . $self->quote_object_name($self->{postgis_schema});
+	}
 	# Objects of the tsql_compat extension are in schema sys, it must be
 	# searched before pg_catalog to take precedence over the PostgreSQL
 	# functions with the same name (left, log, replace, ...).
 	my $tsql_path = '';
 	$tsql_path = ',sys,pg_catalog' if ($self->{is_mssql} && $self->{use_tsql_compat});
 	$local_path .= $tsql_path;
-	if ($self->{postgis_schema}) {
-		$local_path = ',' . $self->quote_object_name($self->{postgis_schema});
-	}
 	if ($self->{data_type}{BFILE} eq 'efile') {
 			$local_path .= ',external_file';
 	}

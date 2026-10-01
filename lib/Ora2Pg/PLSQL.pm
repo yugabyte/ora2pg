@@ -1900,9 +1900,21 @@ sub replace_oracle_function
 	# Translate from_tz Oracle function
 	$str =~ s/FROM_TZ\s*\(\s*([^\)]+)\s*\)/'(' . convert_from_tz($class,$1) . ')::timestamp with time zone'/iegs;
 
-	# Replace call to trim into btrim
-	$str =~ s/\b(TRIM\s*\()\s+/$1/igs;
-	$str =~ s/\bTRIM\s*\(((?!BOTH)[^\(\)]*)\)/trim(both $1)/igs;
+	if ($class->{is_mssql} && $class->{use_tsql_compat})
+	{
+		# TRIM() is grammar in PostgreSQL and always calls pg_catalog.btrim,
+		# call the tsql_compat function explicitly. TRIM(chars FROM str)
+		# becomes sys.trim(chars, str); LEADING, TRAILING and BOTH are
+		# PostgreSQL syntax and are left untouched.
+		$str =~ s/(?<![\.\w])TRIM\s*\(\s*(?!(?:BOTH|LEADING|TRAILING)\b)([^\(\)]*?)\s+FROM\s+([^\(\)]*?)\s*\)/sys.trim($1, $2)/igs;
+		$str =~ s/(?<![\.\w])TRIM\s*\((?!\s*(?:BOTH|LEADING|TRAILING)\b)/sys.trim(/igs;
+	}
+	else
+	{
+		# Replace call to trim into btrim
+		$str =~ s/\b(TRIM\s*\()\s+/$1/igs;
+		$str =~ s/\bTRIM\s*\(((?!BOTH)[^\(\)]*)\)/trim(both $1)/igs;
+	}
 
 	# Do some transformation when Orafce is not used
 	if (!$class->{use_orafce})
@@ -2018,8 +2030,9 @@ sub replace_oracle_function
 	$str =~ s/XMLTYPE\s*\(\s*([^,]+)\s*,[^\)]+\s*\)/xmlparse(DOCUMENT, convert_from($1, 'utf-8'))/igs;
 	$str =~ s/XMLTYPE\.CREATEXML\s*\(\s*[^\)]+\s*\)/xmlparse(DOCUMENT, convert_from($1, 'utf-8'))/igs;
 
-	# Cast round() call as numeric
-	$str =~ s/round\s*\(([^,]+),([\s\d]+)\)/round\(($1)::numeric,$2\)/is;
+	# Cast round() call as numeric, not with tsql_compat that provides
+	# round() for the SQL Server types (money, float, ...)
+	$str =~ s/round\s*\(([^,]+),([\s\d]+)\)/round\(($1)::numeric,$2\)/is if (!$class->{is_mssql} || !$class->{use_tsql_compat});
 
 	if ($str =~ /SDO_/is)
 	{
@@ -4195,6 +4208,8 @@ sub mssql_to_plpgsql
 
 	# With the tsql_compat extension the T-SQL functions are kept as is,
 	# only the datepart keyword is quoted as these functions take a text.
+	# The rewrites of replace_oracle_function() that would change them
+	# (TRIM, ROUND) are disabled there too.
 	if ($class->{use_tsql_compat})
 	{
 		$str =~ s/\b(DATEADD|DATEDIFF|DATEDIFF_BIG|DATENAME|DATEPART|DATETRUNC|DATE_BUCKET)\s*\(\s*($Ora2Pg::MSSQL::TSQL_DATEPART_REGEX)\s*,/$1('\L$2\E',/ig;
