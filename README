@@ -2829,6 +2829,42 @@ CONFIGURATION
         and to_char() functions, but you may prefer to use the orafce
         version of these functions that do not need any code transformation.
 
+    USE_TSQL_COMPAT
+        Only for SQL Server migrations. If you want to use the data types
+        and functions defined in the tsql_compat PostgreSQL extension and
+        prevent Ora2Pg from translating them, enable this directive. The
+        extension must be created in the target database with CREATE
+        EXTENSION tsql_compat, it installs its objects in schema sys.
+
+        The types and functions provided by the extension are listed in the
+        definition file tsql_compat.conf installed with the Ora2Pg Perl
+        modules (lib/Ora2Pg/tsql_compat.conf in the sources). When enabled,
+        the SQL Server types listed there (TINYINT, BIT, MONEY, DATETIME,
+        NVARCHAR, UNIQUEIDENTIFIER, ...) are exported as the sys.* type of
+        the same name, calls to the listed T-SQL functions (GETDATE, NEWID,
+        ISNULL, LEN, DATEADD, DATEDIFF, ...) are not rewritten, and they are
+        not counted in the migration assessment. The datepart argument of
+        the functions flagged datepart (DATEADD, DATEDIFF, DATEPART,
+        DATENAME, ...) is quoted as the extension functions take it as text,
+        and functions flagged qualify (TRIM, that is PostgreSQL grammar) are
+        called with the sys schema. To support a new type or function of the
+        extension, add a line to this file, its format is described at the
+        top of the file. Use TSQL_COMPAT_FILE to read another definition
+        file. The generated search_path includes sys ahead of pg_catalog,
+        after POSTGIS_SCHEMA when it is set; set the same search_path for
+        the database or role used by the application, for example:
+
+                ALTER DATABASE mydb SET search_path = "$user", public, sys, pg_catalog;
+
+        Data types set with DATA_TYPE take precedence over this translation.
+
+    TSQL_COMPAT_FILE
+        Only for SQL Server migrations with USE_TSQL_COMPAT enabled. Path of
+        the file that lists the types and functions provided by the
+        tsql_compat extension. Default is the tsql_compat.conf file
+        installed with the Ora2Pg Perl modules. Use it to describe another
+        version of the extension without changing the installed file.
+
     AUTONOMOUS_TRANSACTION
         Enable translation of autonomous transactions into wrapper functions
         using dblink or pg_background extension. If you don't want to use

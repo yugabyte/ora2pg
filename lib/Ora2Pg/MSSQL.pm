@@ -57,6 +57,73 @@ our %SQL_TYPE = (
 	'SQL_VARIANT' => 'text'
 );
 
+# Default definition file of the types and functions provided by the
+# tsql_compat PostgreSQL extension, installed with this module.
+our $TSQL_COMPAT_FILE = __FILE__;
+$TSQL_COMPAT_FILE =~ s/[^\/\\]+$/tsql_compat.conf/;
+
+=head2 load_tsql_compat
+
+Read the definition file of the tsql_compat extension (TSQL_COMPAT_FILE,
+by default tsql_compat.conf next to this module) and return a hashref:
+
+	type     => { SQL Server type => { name, format, modifier } }
+	format   => { tsql_compat type without schema => data format }
+	function => { function name => { flag => 1 } }
+	datepart => regex matching the datepart keywords
+
+=cut
+
+sub load_tsql_compat
+{
+	my ($self, $file) = @_;
+
+	$file ||= $TSQL_COMPAT_FILE;
+	my %def = (type => {}, format => {}, function => {}, datepart => '');
+	my @dateparts = ();
+
+	open(my $fh, '<', $file) or $self->logit("FATAL: can not read tsql_compat definition file $file, $!\n", 0, 1);
+	while (my $l = <$fh>)
+	{
+		$l =~ s/#.*//;
+		$l =~ s/^\s+|\s+$//g;
+		next if ($l eq '');
+		my ($kind, @fields) = split(/\s+/, $l);
+		$kind = uc($kind);
+		if ($kind eq 'TYPE' && $#fields >= 2)
+		{
+			my ($type, $name, $format, $modifier) = @fields;
+			$self->logit("FATAL: unknown modifier $modifier for type $type in $file\n", 0, 1)
+				if ($modifier && $modifier !~ /^(length|precision)$/i);
+			$def{type}{uc($type)} = { name => $name, format => lc($format), modifier => lc($modifier || '') };
+			(my $short = lc($name)) =~ s/^.*\.//;
+			$def{format}{$short} = lc($format);
+		}
+		elsif ($kind eq 'FUNCTION' && $#fields >= 0)
+		{
+			my $name = uc(shift(@fields));
+			$def{function}{$name} = { map { lc($_) => 1 } @fields };
+			foreach my $f (keys %{ $def{function}{$name} }) {
+				$self->logit("FATAL: unknown flag $f for function $name in $file\n", 0, 1) if ($f !~ /^(datepart|qualify)$/);
+			}
+		}
+		elsif ($kind eq 'DATEPART' && $#fields >= 0)
+		{
+			push(@dateparts, map { lc($_) } @fields);
+		}
+		else
+		{
+			$self->logit("FATAL: invalid line in tsql_compat definition file $file: $l\n", 0, 1);
+		}
+	}
+	close($fh);
+
+	# Longest keywords first so that they are not matched by a shorter one
+	$def{datepart} = join('|', sort { length($b) <=> length($a) } @dateparts);
+
+	return \%def;
+}
+
 sub _db_connection
 {
 	my $self = shift;
@@ -1335,6 +1402,19 @@ sub _sql_type
 
 		$len *= 2 if ($len > 0 && $self->{double_max_varchar} && $type =~ /VARCHAR/);
 
+		# Types emulated by the tsql_compat extension are kept as is,
+		# only the length or fractional seconds precision is appended
+		if ($self->{use_tsql_compat} && $self->{data_type}{$type} =~ /^sys\./i)
+		{
+			my $modifier = exists $self->{tsql_compat}{type}{$type} ? $self->{tsql_compat}{type}{$type}{modifier} : '';
+			if ($len > 0 && $modifier eq 'length') {
+				return "$self->{data_type}{$type}($len)";
+			} elsif ($modifier eq 'precision' && $scale ne '' && $scale =~ /^\d+$/ && $scale < 7) {
+				return "$self->{data_type}{$type}($scale)";
+			}
+			return $self->{data_type}{$type};
+		}
+
 		if ($len)
 		{
 			if ( $type =~ /CHAR|TEXT/ )
@@ -1407,6 +1487,14 @@ sub replace_sql_type
 	$str =~ s/with local time zone/with time zone/igs;
 	$str =~ s/([A-Z])ORA2PG_COMMENT/$1 ORA2PG_COMMENT/igs;
 	$str =~ s/\(\s*MAX\s*\)//igs;
+
+	# Types already qualified with schema sys (tsql_compat extension)
+	# must not be translated again
+	my %sys_types = ();
+	my $j = 0;
+	if ($self->{use_tsql_compat}) {
+		while ($str =~ s/\b(sys\.[a-z0-9_]+)/\%SYSTYPE$j\%/is) { $sys_types{$j} = $1; $j++; }
+	}
 
 	# Replace type with precision
 	my $mssqltype_regex = '';
@@ -1492,6 +1580,10 @@ sub replace_sql_type
 	$str =~ s/\%\|\%/\)/gs;
 	$str =~ s/\%\|/\(/gs;
 
+	if ($self->{use_tsql_compat}) {
+		while ($str =~ s/\b(sys\.[a-z0-9_]+)/\%SYSTYPE$j\%/is) { $sys_types{$j} = $1; $j++; }
+	}
+
 	# Replace datatype even without precision
 	my %recover_type = ();
 	my $i = 0;
@@ -1513,6 +1605,8 @@ sub replace_sql_type
 	}
 	# Set varchar without length to text
 	$str =~ s/\bVARCHAR(\s*(?!\())/text$1/igs;
+
+	$str =~ s/\%SYSTYPE(\d+)\%/$sys_types{$1}/gs;
 
         return $str;
 }
