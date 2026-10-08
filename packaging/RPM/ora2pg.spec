@@ -53,6 +53,7 @@ Oracle database to a PostgreSQL database.
 %{perl_vendorlib}/Ora2Pg/MySQL.pm
 %{perl_vendorlib}/Ora2Pg/PLSQL.pm
 %{perl_vendorlib}/Ora2Pg/GEOM.pm
+%{perl_vendorlib}/Ora2Pg/tsql_compat.conf
 %{perl_vendorlib}/Ora2Pg.pm
 %{_docdir}/%{name}-%{version}/*
 

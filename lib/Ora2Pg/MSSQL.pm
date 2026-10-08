@@ -57,73 +57,72 @@ our %SQL_TYPE = (
 	'SQL_VARIANT' => 'text'
 );
 
-# Data types provided by the tsql_compat PostgreSQL extension in schema sys.
-# When USE_TSQL_COMPAT is enabled they replace the default translation so
-# that the SQL Server types are kept as is. NCHAR is not listed because
-# sys.NCHAR is a domain over bpchar that can not take a length.
-our %TSQL_COMPAT_TYPE = (
-	'TINYINT' => 'sys.tinyint',
-	'BIT' => 'sys.bit',
-	'MONEY' => 'sys.money',
-	'SMALLMONEY' => 'sys.smallmoney',
-	'SMALLDATETIME' => 'sys.smalldatetime',
-	'DATETIME' => 'sys.datetime',
-	'DATETIME2' => 'sys.datetime2',
-	'DATETIMEOFFSET' => 'sys.datetimeoffset',
-	'NVARCHAR' => 'sys.nvarchar',
-	'NTEXT' => 'sys.ntext',
-	'VARBINARY' => 'sys.varbinary',
-	'BINARY' => 'sys.binary',
-	'IMAGE' => 'sys.image',
-	'UNIQUEIDENTIFIER' => 'sys.uniqueidentifier',
-	'SYSNAME' => 'sys.sysname'
-);
+# Default definition file of the types and functions provided by the
+# tsql_compat PostgreSQL extension, installed with this module.
+our $TSQL_COMPAT_FILE = __FILE__;
+$TSQL_COMPAT_FILE =~ s/[^\/\\]+$/tsql_compat.conf/;
 
-# PostgreSQL type with the same input format as the tsql_compat types, it
-# is used to format the data during data export.
-our %TSQL_COMPAT_DATA_FORMAT = (
-	'tinyint' => 'smallint',
-	'bit' => 'smallint',
-	'money' => 'numeric',
-	'smallmoney' => 'numeric',
-	'smalldatetime' => 'timestamp',
-	'datetime' => 'timestamp',
-	'datetime2' => 'timestamp',
-	'datetimeoffset' => 'timestamptz',
-	'nvarchar' => 'varchar',
-	'ntext' => 'text',
-	'sysname' => 'varchar',
-	'uniqueidentifier' => 'uuid',
-	# sys.varbinary input needs the 0x hexadecimal notation
-	'varbinary' => 'bytea',
-	'binary' => 'bytea',
-	'image' => 'bytea'
-);
+=head2 load_tsql_compat
 
-# T-SQL functions provided by the tsql_compat PostgreSQL extension. When
-# USE_TSQL_COMPAT is enabled calls to these functions are not translated
-# and are not counted in the migration assessment. The datepart argument of
-# the date functions is quoted, and TRIM() is called as sys.trim() because
-# TRIM is grammar in PostgreSQL.
-our %TSQL_COMPAT_FUNCTION = map { $_ => 1 } qw(
-	ABS ASCII ATN2 CEILING CHAR CHARINDEX CHOOSE CONCAT CONCAT_WS COUNT_BIG
-	DATALENGTH DATE_BUCKET DATEADD DATEDIFF DATEDIFF_BIG DATEFROMPARTS
-	DATENAME DATEPART DATETIME2FROMPARTS DATETIMEFROMPARTS
-	DATETIMEOFFSETFROMPARTS DATETRUNC DAY DEGREES DIFFERENCE EOMONTH EXP
-	FLOOR FN_VARBINTOHEXSTR FORMAT GETDATE GETUTCDATE IIF ISDATE ISJSON
-	ISNULL ISNUMERIC JSON_MODIFY JSON_QUERY JSON_VALUE LEFT LEN LOG LOG10
-	LOGINPROPERTY LOWER LTRIM MONTH NEWID NEWSEQUENTIALID PARSENAME PATINDEX
-	POWER QUOTENAME RADIANS RAND REPLACE REPLICATE REVERSE RIGHT ROUND RTRIM
-	SIGN SMALLDATETIMEFROMPARTS SOUNDEX SPACE SQRT SQUARE STDEV STDEVP STR
-	STRING_AGG STRING_ESCAPE STRING_SPLIT STUFF SUBSTRING SWITCHOFFSET
-	SYSDATETIME SYSDATETIMEOFFSET SYSUTCDATETIME TIMEFROMPARTS
-	TODATETIMEOFFSET TRANSLATE TRIGGER_NESTLEVEL TRIM UNICODE UPPER VAR VARP
-	YEAR
-);
+Read the definition file of the tsql_compat extension (TSQL_COMPAT_FILE,
+by default tsql_compat.conf next to this module) and return a hashref:
 
-# Datepart keywords accepted by DATEADD, DATEDIFF, DATEPART, DATENAME, ...
-# The tsql_compat versions of these functions take the datepart as text.
-our $TSQL_DATEPART_REGEX = 'year|yyyy|yy|quarter|qq|q|month|mm|m|dayofyear|dy|y|day|dd|d|week|wk|ww|weekday|dw|w|hour|hh|minute|mi|n|second|ss|s|millisecond|ms|microsecond|mcs|nanosecond|ns|tzoffset|tz|iso_week|isowk|isoww';
+	type     => { SQL Server type => { name, format, modifier } }
+	format   => { tsql_compat type without schema => data format }
+	function => { function name => { flag => 1 } }
+	datepart => regex matching the datepart keywords
+
+=cut
+
+sub load_tsql_compat
+{
+	my ($self, $file) = @_;
+
+	$file ||= $TSQL_COMPAT_FILE;
+	my %def = (type => {}, format => {}, function => {}, datepart => '');
+	my @dateparts = ();
+
+	open(my $fh, '<', $file) or $self->logit("FATAL: can not read tsql_compat definition file $file, $!\n", 0, 1);
+	while (my $l = <$fh>)
+	{
+		$l =~ s/#.*//;
+		$l =~ s/^\s+|\s+$//g;
+		next if ($l eq '');
+		my ($kind, @fields) = split(/\s+/, $l);
+		$kind = uc($kind);
+		if ($kind eq 'TYPE' && $#fields >= 2)
+		{
+			my ($type, $name, $format, $modifier) = @fields;
+			$self->logit("FATAL: unknown modifier $modifier for type $type in $file\n", 0, 1)
+				if ($modifier && $modifier !~ /^(length|precision)$/i);
+			$def{type}{uc($type)} = { name => $name, format => lc($format), modifier => lc($modifier || '') };
+			(my $short = lc($name)) =~ s/^.*\.//;
+			$def{format}{$short} = lc($format);
+		}
+		elsif ($kind eq 'FUNCTION' && $#fields >= 0)
+		{
+			my $name = uc(shift(@fields));
+			$def{function}{$name} = { map { lc($_) => 1 } @fields };
+			foreach my $f (keys %{ $def{function}{$name} }) {
+				$self->logit("FATAL: unknown flag $f for function $name in $file\n", 0, 1) if ($f !~ /^(datepart|qualify)$/);
+			}
+		}
+		elsif ($kind eq 'DATEPART' && $#fields >= 0)
+		{
+			push(@dateparts, map { lc($_) } @fields);
+		}
+		else
+		{
+			$self->logit("FATAL: invalid line in tsql_compat definition file $file: $l\n", 0, 1);
+		}
+	}
+	close($fh);
+
+	# Longest keywords first so that they are not matched by a shorter one
+	$def{datepart} = join('|', sort { length($b) <=> length($a) } @dateparts);
+
+	return \%def;
+}
 
 sub _db_connection
 {
@@ -1407,9 +1406,10 @@ sub _sql_type
 		# only the length or fractional seconds precision is appended
 		if ($self->{use_tsql_compat} && $self->{data_type}{$type} =~ /^sys\./i)
 		{
-			if ($len > 0 && $type =~ /^(NVARCHAR|VARBINARY|BINARY)$/) {
+			my $modifier = exists $self->{tsql_compat}{type}{$type} ? $self->{tsql_compat}{type}{$type}{modifier} : '';
+			if ($len > 0 && $modifier eq 'length') {
 				return "$self->{data_type}{$type}($len)";
-			} elsif ($type =~ /^(DATETIME2|DATETIMEOFFSET)$/ && $scale ne '' && $scale =~ /^\d+$/ && $scale < 7) {
+			} elsif ($modifier eq 'precision' && $scale ne '' && $scale =~ /^\d+$/ && $scale < 7) {
 				return "$self->{data_type}{$type}($scale)";
 			}
 			return $self->{data_type}{$type};

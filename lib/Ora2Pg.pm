@@ -1444,6 +1444,13 @@ sub _init
 
 	# Disable the use of the tsql_compat extension by default
 	$self->{use_tsql_compat} ||= 0;
+	# Types and functions provided by the tsql_compat extension, read from
+	# TSQL_COMPAT_FILE or the default definition file installed with Ora2Pg
+	if ($self->{is_mssql} && $self->{use_tsql_compat}) {
+		$self->{tsql_compat} = Ora2Pg::MSSQL::load_tsql_compat($self, $self->{tsql_compat_file});
+	} else {
+		$self->{tsql_compat} = { type => {}, format => {}, function => {}, datepart => '' };
+	}
 	$self->{local_schemas} = ();
 	$self->{local_schemas_regex} = '';
 
@@ -1567,7 +1574,7 @@ sub _init
 		} elsif ($self->{is_mssql}) {
 			%{$self->{data_type}} = %Ora2Pg::MSSQL::SQL_TYPE;
 			if ($self->{use_tsql_compat}) {
-				$self->{data_type}{$_} = $Ora2Pg::MSSQL::TSQL_COMPAT_TYPE{$_} foreach (keys %Ora2Pg::MSSQL::TSQL_COMPAT_TYPE);
+				$self->{data_type}{$_} = $self->{tsql_compat}{type}{$_}{name} foreach (keys %{ $self->{tsql_compat}{type} });
 			}
 		} else {
 			%{$self->{data_type}} = %Ora2Pg::Oracle::SQL_TYPE;
@@ -1594,7 +1601,7 @@ sub _init
 		} elsif ($self->{is_mssql}) {
 			%{$self->{data_type}} = %Ora2Pg::MSSQL::SQL_TYPE;
 			if ($self->{use_tsql_compat}) {
-				$self->{data_type}{$_} = $Ora2Pg::MSSQL::TSQL_COMPAT_TYPE{$_} foreach (keys %Ora2Pg::MSSQL::TSQL_COMPAT_TYPE);
+				$self->{data_type}{$_} = $self->{tsql_compat}{type}{$_}{name} foreach (keys %{ $self->{tsql_compat}{type} });
 			}
 		} else {
 			%{$self->{data_type}} = %Ora2Pg::Oracle::SQL_TYPE;
@@ -14824,7 +14831,7 @@ sub tsql_compat_data_format
 	return '' if ($type !~ /^(sys\.)?(\w+)/i);
 	my ($schema, $name) = ($1, lc($2));
 	return '' if (!$schema && $name eq 'bit');
-	return $Ora2Pg::MSSQL::TSQL_COMPAT_DATA_FORMAT{$name} || '';
+	return $self->{tsql_compat}{format}{$name} || '';
 }
 
 # Returns true when the destination type is a binary type of the tsql_compat

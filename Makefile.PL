@@ -1272,8 +1272,11 @@ USE_ORAFCE	0
 # like DATETIME, BIT, NVARCHAR or UNIQUEIDENTIFIER are exported as the
 # sys.* type of the same name and calls to functions like GETDATE(),
 # ISNULL() or DATEADD() are kept as is. The search_path of the database
-# must list sys before pg_catalog.
+# must list sys before pg_catalog. The types and functions provided by the
+# extension are read from the tsql_compat.conf file installed with the Ora2Pg
+# Perl modules, set TSQL_COMPAT_FILE to read another definition file.
 USE_TSQL_COMPAT	0
+#TSQL_COMPAT_FILE	/path/to/tsql_compat.conf
 
 # Enable translation of autonomous transactions into a wrapper function
 # using dblink or pg_background extension. If you don't want to use this
