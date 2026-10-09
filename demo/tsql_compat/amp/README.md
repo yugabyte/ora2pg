@@ -31,8 +31,9 @@ Needs Linux x86_64, Docker Engine 28 or newer (image mounts), `jq`, `curl` and
 | `ora2pg-tsql` | `../Dockerfile` (this repository) |
 | `amp-ora2pg:local` | `yugabyte/meko` `amp/deploy/ora2pg/Dockerfile` |
 
-Use branch `ameya/tsql-compat-amp` of all three repositories, checked out side
-by side:
+Use branch `ameya/tsql-compat-amp` of `yugabyte/meko`, `yugabyte/ora2pg` and
+`AmeyaKasture/tsql_compat` (a fork of `yugabyte/tsql_compat`), checked out
+side by side:
 
 ```bash
 # meko: endpoint (slow; its base image is on quay.io) and controller

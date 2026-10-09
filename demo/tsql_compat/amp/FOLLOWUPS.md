@@ -66,5 +66,6 @@ and what happens without it.
     - Connectivity check is TCP only (no login, version or SSL).
     - One schema per migration; `parallel_jobs` is ignored (ODBC handles do
       not survive Ora2Pg's fork).
-17. **Review**: branch `ameya/tsql-compat-amp` in `meko`, `tsql_compat` and
-    `ora2pg` (pushed, no PRs yet).
+17. **Review**: branch `ameya/tsql-compat-amp` in `yugabyte/meko`,
+    `yugabyte/ora2pg` and `AmeyaKasture/tsql_compat` (a fork: no write access
+    to `yugabyte/tsql_compat`). Pushed, no PRs yet.
