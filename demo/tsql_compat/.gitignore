@@ -1,2 +1,4 @@
 output/
+output-amp/
 ora2pg-no-compat.conf
+amp/amp.env

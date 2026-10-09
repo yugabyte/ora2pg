@@ -8,6 +8,8 @@ Files in this directory:
   `USE_TSQL_COMPAT 1`)
 - `sql/shop.sql`: sample SQL Server application (tables, view, function,
   procedures, trigger, data)
+- `amp/`: the same migration into an AMP endpoint on Docker, through the AMP
+  controller's migration API (`amp/README.md`)
 
 Run all commands from this directory:
 
